@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Hand Tracking MIDI Controller</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <h1>Hand Tracking MIDI Controller</h1>
+    <div class="video-container">
+      <video id="video-input" autoplay playsinline></video>
+      <canvas id="output-canvas"></canvas>
+    </div>
+    <div id="controls">
+      <div id="fps-display">FPS: --</div>
+      <div id="status-display">Status: No Hands Detected</div>
+      <div id="left-hand-display">Left Hand: Not Detected</div>
+      <div id="right-hand-display">Right Hand: Not Detected</div>
+      <div id="midi-display">MIDI Control: OFF</div>
+      <div id="modulation-display">Modulation: --</div>
+      <!-- Dropdown to select the control hand -->
+      <div>
+        Control Hand:
+        <select id="control-hand-select">
+          <option value="Right" selected>Right Hand</option>
+          <option value="Left">Left Hand</option>
+        </select>
+      </div>
+      <!-- Dropdown to select gesture strictness level -->
+      <div>
+        Gesture Strictness:
+        <select id="gesture-strictness-level-select">
+          <option value="1">1 (Least Strict)</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+          <option value="4">4</option>
+          <option value="5" selected>5 (Default)</option>
+          <option value="6">6</option>
+          <option value="7">7</option>
+          <option value="8">8</option>
+          <option value="9">9</option>
+          <option value="10">10 (Most Strict)</option>
+        </select>
+      </div>
+      <!-- Dropdown to select hand-open strictness level -->
+      <div>
+        Hand-Open Strictness:
+        <select id="hand-open-strictness-level-select">
+          <option value="1">1 (Least Strict)</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+          <option value="4">4</option>
+          <option value="5" selected>5 (Default)</option>
+          <option value="6">6</option>
+          <option value="7">7</option>
+          <option value="8">8</option>
+          <option value="9">9</option>
+          <option value="10">10 (Most Strict)</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Load your application script as a module -->
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
