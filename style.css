@@ -1,0 +1,448 @@
+/* style.css */
+
+/* CSS Variables for Theming */
+:root {
+  --background-color: #1e1e1e;
+  --primary-color: #ffffff;
+  --secondary-color: #1db954; /* Spotify Green */
+  --accent-color: #ff4081;
+  --text-color: #ffffff;
+  --overlay-background: rgba(0, 0, 0, 0.85);
+  --status-connected: #00ff00;
+  --status-disconnected: #ff0000;
+  --control-background: #2c2c2c;
+  --control-border: #444444;
+  --slider-thumb: #1db954;
+  --button-background: #1db954;
+  --button-hover: #1ed760;
+}
+
+/* Global Styles */
+body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background-color: var(--background-color);
+  color: var(--text-color);
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  margin: 0;
+  padding: 20px;
+}
+
+header,
+footer {
+  width: 100%;
+  max-width: 960px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+h1 {
+  margin: 0;
+  font-size: 2rem;
+}
+
+.status {
+  padding: 8px 16px;
+  border-radius: 5px;
+  font-size: 1rem;
+  background-color: var(--status-disconnected); /* Red for Disconnected */
+  color: var(--primary-color);
+  transition: background-color 0.3s;
+}
+
+.status.connected {
+  background-color: var(--status-connected); /* Green for Connected */
+}
+
+#gesture-indicator p {
+  margin: 0 0 5px 0;
+  font-size: 1rem;
+}
+
+#gesture-progress {
+  width: 100%;
+  background-color: var(--control-border);
+  border-radius: 5px;
+  overflow: hidden;
+  height: 20px;
+  margin-top: 5px;
+}
+
+#gesture-progress-bar {
+  height: 100%;
+  width: 0%;
+  background-color: var(--secondary-color);
+  transition: width 0.3s;
+}
+
+/* MIDI Selection Styling */
+#midi-selection {
+  margin: 20px 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#midi-selection label {
+  font-size: 1rem;
+}
+
+#midi-selection select {
+  padding: 8px 12px;
+  font-size: 1rem;
+  border: 1px solid var(--control-border);
+  border-radius: 5px;
+  background-color: var(--control-background);
+  color: var(--primary-color);
+  cursor: pointer;
+  min-width: 200px;
+  transition: border-color 0.3s, box-shadow 0.3s;
+}
+
+#midi-selection select:focus {
+  outline: none;
+  border-color: var(--secondary-color);
+  box-shadow: 0 0 5px var(--secondary-color);
+}
+
+#disconnect-midi {
+  padding: 8px 16px;
+  font-size: 1rem;
+  border: none;
+  border-radius: 5px;
+  background-color: var(--control-background);
+  color: var(--primary-color);
+  cursor: pointer;
+  transition: background-color 0.3s;
+}
+
+#disconnect-midi:hover:not(:disabled) {
+  background-color: var(--button-hover);
+}
+
+#disconnect-midi:disabled {
+  background-color: #555555;
+  cursor: not-allowed;
+}
+
+/* Video and Canvas Styling */
+.video-container {
+  position: relative;
+  width: 960px;
+  height: 540px;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+}
+
+#video,
+#canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  transform: scaleX(-1);
+  object-fit: cover; /* Ensures the video fills the container */
+}
+
+#canvas {
+  pointer-events: none;
+}
+
+/* FPS Counter Overlay Styling */
+#fps-counter {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background-color: rgba(30, 30, 30, 0.7);
+  color: var(--primary-color);
+  padding: 5px 10px;
+  border-radius: 5px;
+  font-size: 0.9rem;
+  pointer-events: none; /* Allows clicks to pass through */
+  z-index: 10;
+}
+
+/* Hand Status Styling */
+#hand-status {
+  display: flex;
+  gap: 40px;
+  margin: 20px 0;
+}
+
+.hand-status-item p {
+  background-color: var(--control-background);
+  padding: 10px 20px;
+  border-radius: 5px;
+  font-size: 1rem;
+  margin: 0;
+}
+
+#left-hand-status,
+#left-hand-state {
+  color: var(--secondary-color);
+}
+
+#right-hand-status,
+#right-hand-state {
+  color: var(--secondary-color);
+}
+
+#hand-state p.active {
+  animation: pulse 1s infinite;
+}
+
+/* Pulse Animation */
+@keyframes pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(29, 185, 84, 0.7);
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgba(29, 185, 84, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(29, 185, 84, 0);
+  }
+}
+
+/* Modulation Control Styling */
+#modulation-control {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+}
+
+.modulation-status {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+#modulation-status {
+  display: flex;
+  align-items: center;
+  padding: 8px 16px;
+  border-radius: 5px;
+  font-size: 1rem;
+  background-color: var(--status-disconnected);
+  color: var(--primary-color);
+  transition: background-color 0.3s;
+}
+
+#modulation-status.connected {
+  background-color: var(--status-connected);
+}
+
+#modulation-value {
+  font-size: 1rem;
+  font-weight: bold;
+}
+
+/* Distance Controls Styling */
+#distance-controls {
+  width: 100%;
+  max-width: 960px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-around;
+  gap: 20px;
+}
+
+.control-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 15px;
+  flex: 1 1 300px;
+}
+
+.slider-container,
+.dropdown-container {
+  width: 100%;
+  max-width: 300px;
+}
+
+.slider-container label,
+.dropdown-container label {
+  margin-bottom: 5px;
+  font-size: 1rem;
+}
+
+.slider-input {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.slider-container input[type="range"] {
+  flex: 1;
+  -webkit-appearance: none;
+  height: 8px;
+  border-radius: 5px;
+  background: var(--control-border);
+  outline: none;
+  transition: background 0.3s;
+}
+
+.slider-container input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--slider-thumb);
+  cursor: pointer;
+  transition: background 0.3s;
+}
+
+.slider-container input[type="range"]::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--slider-thumb);
+  cursor: pointer;
+  transition: background 0.3s;
+}
+
+.slider-container input[type="range"]:hover {
+  background: var(--secondary-color);
+}
+
+.slider-container input[type="range"]:hover::-webkit-slider-thumb {
+  background: var(--button-hover);
+}
+
+.slider-container input[type="range"]:hover::-moz-range-thumb {
+  background: var(--button-hover);
+}
+
+.slider-container input[type="number"] {
+  width: 80px;
+  padding: 8px;
+  border: 1px solid var(--control-border);
+  border-radius: 5px;
+  background-color: var(--control-background);
+  color: var(--primary-color);
+  text-align: center;
+  font-size: 1rem;
+  transition: border-color 0.3s, box-shadow 0.3s;
+}
+
+.slider-container input[type="number"]:focus {
+  outline: none;
+  border-color: var(--secondary-color);
+  box-shadow: 0 0 5px var(--secondary-color);
+}
+
+.dropdown-container select {
+  width: 100%;
+  padding: 8px 12px;
+  font-size: 1rem;
+  border: 1px solid var(--control-border);
+  border-radius: 5px;
+  background-color: var(--control-background);
+  color: var(--primary-color);
+  cursor: pointer;
+  transition: border-color 0.3s, box-shadow 0.3s;
+}
+
+.dropdown-container select:focus {
+  outline: none;
+  border-color: var(--secondary-color);
+  box-shadow: 0 0 5px var(--secondary-color);
+}
+
+/* Checkbox Styling */
+.checkbox-container {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 1rem;
+}
+
+.checkbox-container input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  cursor: pointer;
+  accent-color: var(--secondary-color);
+  transition: transform 0.2s;
+}
+
+.checkbox-container input[type="checkbox"]:hover {
+  transform: scale(1.1);
+}
+
+/* Gesture Indicator Enhancements */
+#gesture-indicator {
+  width: 100%;
+  max-width: 300px;
+  text-align: center;
+}
+
+#gesture-indicator p {
+  margin-bottom: 10px;
+  font-size: 1rem;
+}
+
+/* MIDI Access Overlay Styling */
+.overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: var(--overlay-background);
+  display: none; /* Hidden by default */
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.overlay-content {
+  background-color: var(--primary-color);
+  color: var(--background-color);
+  padding: 30px 50px;
+  border-radius: 10px;
+  text-align: center;
+  font-size: 1.2rem;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+}
+
+#allow-midi {
+  margin-top: 20px;
+  padding: 10px 20px;
+  font-size: 1rem;
+  border: none;
+  border-radius: 5px;
+  background-color: var(--secondary-color);
+  color: var(--primary-color);
+  cursor: pointer;
+  transition: background-color 0.3s;
+}
+
+#allow-midi:hover {
+  background-color: var(--button-hover);
+}
+
+/* Modulation Status Indicators */
+#modulation-status::before {
+  content: "";
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background-color: currentColor;
+}
+
+#modulation-status.off::before {
+  background-color: var(--status-disconnected);
+}
+
+#modulation-status.on::before {
+  background-color: var(--status-connected);
+}
