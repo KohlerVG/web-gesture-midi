@@ -1,6 +1,8 @@
-// app.js
+// app.js - Refined Gesture Detection without Calibration Controls
 
-// Select DOM elements
+// =========================
+// DOM Element Selections
+// =========================
 const videoElement = document.getElementById("video");
 const canvasElement = document.getElementById("canvas");
 const canvasCtx = canvasElement.getContext("2d");
@@ -18,11 +20,9 @@ const minDistanceSlider = document.getElementById("min-distance");
 const maxDistanceSlider = document.getElementById("max-distance");
 const minDistanceNumber = document.getElementById("min-distance-number");
 const maxDistanceNumber = document.getElementById("max-distance-number");
-const openHandStrictnessDropdown = document.getElementById(
-  "open-hand-strictness"
-);
-const pointingUpStrictnessDropdown = document.getElementById(
-  "pointing-up-strictness"
+const overlapThresholdSlider = document.getElementById("overlap-threshold");
+const overlapThresholdNumber = document.getElementById(
+  "overlap-threshold-number"
 );
 
 // MIDI Status Element
@@ -42,7 +42,38 @@ const reverseModulationCheckbox = document.getElementById("reverse-modulation");
 // Gesture Progress Bar Element
 const gestureProgressBar = document.getElementById("gesture-progress-bar");
 
-// Initialize MediaPipe Hands
+// Camera Selection Dropdown
+const cameraPortsDropdown = document.getElementById("camera-ports");
+
+// =========================
+// Hand Selection Elements
+// =========================
+
+// Radio buttons for hand selection
+const gestureHandRadioButtons = document.getElementsByName("gesture-hand");
+
+// Variable to store the selected hand ('left' or 'right')
+let selectedHand = "left"; // Default as per HTML's checked value
+
+// Add event listeners to update selectedHand when radio buttons change
+gestureHandRadioButtons.forEach((radio) => {
+  radio.addEventListener("change", (event) => {
+    if (event.target.checked) {
+      selectedHand = event.target.value;
+      console.log(`Selected hand for gesture controls: ${selectedHand}`);
+      // Optionally, reset modulation wheel when hand selection changes
+      modulationWheelOn = false;
+      modulationStatus.textContent = `Modulation Wheel: OFF`;
+      modulationStatus.classList.remove("on");
+      modulationStatus.classList.add("off");
+      modulationValueDisplay.textContent = `Modulation Value: 0`;
+    }
+  });
+});
+
+// =========================
+// MediaPipe Hands Initialization
+// =========================
 const hands = new Hands({
   locateFile: (file) => {
     return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
@@ -58,10 +89,9 @@ hands.setOptions({
 
 hands.onResults(onResults);
 
-// Flag to prevent multiple initializations
-let canvasInitialized = false;
-
+// =========================
 // Gesture Control Variables
+// =========================
 let modulationWheelOn = false; // State of modulation wheel
 let lastGestureTime = 0; // Timestamp of last gesture to enforce cooldown
 const gestureCooldown = 1000; // 1 second cooldown in milliseconds
@@ -69,6 +99,9 @@ const gestureCooldown = 1000; // 1 second cooldown in milliseconds
 // Configurable Hand Distance Variables
 let minDistance = parseFloat(minDistanceSlider.value); // Initialize from slider
 let maxDistance = parseFloat(maxDistanceSlider.value); // Initialize from slider
+
+// Overlap Threshold Variable
+let overlapThreshold = parseFloat(overlapThresholdSlider.value); // Initialize from slider
 
 // MIDI Access and Output
 let midiAccess = null;
@@ -79,15 +112,14 @@ let modulationValuesQueue = [];
 const smoothingFactor = 5; // Number of frames to average
 
 // Gesture Strictness Levels (1-10)
-let openHandStrictness = parseInt(openHandStrictnessDropdown.value); // Default 5
-let pointingUpStrictness = parseInt(pointingUpStrictnessDropdown.value); // Default 5
+let openHandStrictness = 5; // Default value
+let pointingUpStrictness = 5; // Default value
 
 // Gesture State Tracking
 let isPointingUpActive = false;
-let isHandOpenActive = false;
 
 // Gesture Confirmation Counters
-const gestureConfirmationThreshold = 10; // Increased from 5 to 10
+const gestureConfirmationThreshold = 5; // Number of consecutive frames gesture must be held
 
 let pointingUpCounter = 0;
 
@@ -96,20 +128,33 @@ let frameCount = 0;
 let fps = 0;
 let lastTime = performance.now(); // Ensure this is declared only once
 
-// Function to initialize canvas scaling based on devicePixelRatio
+// Current MediaStream
+let currentStream = null;
+
+// Flag to prevent multiple loops
+let processing = false;
+
+// =========================
+// MIDI Throttling Variables
+// =========================
+let lastMIDITime = 0;
+const midiThrottleInterval = 10; // in milliseconds (~100 FPS)
+
+// Flag for debounce
+let lastToggleTime = 0;
+const toggleDebounceTime = 1000; // 1 second
+
+// =========================
+// Canvas Initialization
+// =========================
 function initializeCanvas() {
-  if (canvasInitialized) {
-    console.warn("Canvas has already been initialized.");
-    return;
-  }
-  console.log("Initializing canvas scaling...");
   const scale = window.devicePixelRatio || 1;
   canvasElement.width = 960 * scale; // Internal canvas width
   canvasElement.height = 540 * scale; // Internal canvas height
   canvasElement.style.width = "960px"; // CSS width
   canvasElement.style.height = "540px"; // CSS height
   canvasCtx.scale(scale, scale);
-  canvasInitialized = true; // Set flag after initialization
+  console.log("Canvas initialized with scaling:", scale);
 }
 
 // Listen for video metadata loaded to set canvas size
@@ -118,7 +163,7 @@ videoElement.addEventListener("loadedmetadata", () => {
   initializeCanvas();
 
   // Verify actual video settings
-  const videoTrack = videoElement.srcObject.getVideoTracks()[0];
+  const videoTrack = currentStream?.getVideoTracks()[0];
   if (videoTrack) {
     const settings = videoTrack.getSettings();
     console.log(
@@ -131,16 +176,171 @@ videoElement.addEventListener("loadedmetadata", () => {
   }
 });
 
-// Initialize Camera with optimized settings
-const camera = new Camera(videoElement, {
-  onFrame: async () => {
-    await hands.send({ image: videoElement });
-  },
-  width: 960, // Lower resolution to align with webcam capabilities
-  height: 540, // Lower resolution
-  frameRate: { ideal: 60, max: 60 }, // Request up to 60 FPS
+// =========================
+// Video Processing
+// =========================
+async function processVideoFrame() {
+  if (processing) return; // Prevent multiple instances
+  processing = true;
+
+  const sendFrame = async () => {
+    if (videoElement.readyState >= 2) {
+      // HAVE_CURRENT_DATA
+      try {
+        await hands.send({ image: videoElement });
+      } catch (error) {
+        console.error("Error sending frame to MediaPipe Hands:", error);
+      }
+    }
+    requestAnimationFrame(sendFrame);
+  };
+
+  sendFrame();
+}
+
+// =========================
+// Camera Handling
+// =========================
+async function populateCameraPorts() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const videoDevices = devices.filter(
+      (device) => device.kind === "videoinput"
+    );
+
+    // Clear existing options
+    cameraPortsDropdown.innerHTML =
+      '<option value="">-- Select Camera --</option>';
+
+    videoDevices.forEach((device, index) => {
+      const option = document.createElement("option");
+      option.value = device.deviceId;
+      option.textContent = device.label || `Camera ${index + 1}`;
+      cameraPortsDropdown.appendChild(option);
+    });
+
+    // Attempt to select the internal camera by default
+    const internalKeywords = ["internal", "built-in", "default", "integrated"];
+    const internalDevice = videoDevices.find((device) =>
+      internalKeywords.some((keyword) =>
+        device.label.toLowerCase().includes(keyword)
+      )
+    );
+
+    if (internalDevice) {
+      cameraPortsDropdown.value = internalDevice.deviceId;
+      console.log(`Auto-selecting internal camera: ${internalDevice.label}`);
+      startCameraStream(internalDevice.deviceId);
+    } else if (videoDevices.length > 0) {
+      // If no internal camera found, select the first available
+      cameraPortsDropdown.value = videoDevices[0].deviceId;
+      console.log(
+        `Auto-selecting first available camera: ${videoDevices[0].label}`
+      );
+      startCameraStream(videoDevices[0].deviceId);
+    } else {
+      console.warn("No video input devices found.");
+      cameraPortsDropdown.innerHTML =
+        '<option value="">-- No Cameras Available --</option>';
+    }
+  } catch (error) {
+    console.error("Error enumerating devices:", error);
+    cameraPortsDropdown.innerHTML =
+      '<option value="">-- Error Loading Cameras --</option>';
+  }
+}
+
+// Function to start the camera stream with the selected device ID
+async function startCameraStream(deviceId) {
+  try {
+    // Stop existing stream if any
+    if (currentStream) {
+      currentStream.getTracks().forEach((track) => track.stop());
+      console.log("Stopped previous camera stream.");
+    }
+
+    // Get the new stream
+    const constraints = {
+      video: {
+        deviceId: { exact: deviceId },
+        width: { ideal: 960 },
+        height: { ideal: 540 },
+        frameRate: { ideal: 60, max: 60 },
+      },
+      audio: false,
+    };
+
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    videoElement.srcObject = stream;
+    currentStream = stream;
+    console.log(`Started camera stream with device ID: ${deviceId}`);
+
+    // Ensure video starts playing
+    await videoElement.play();
+
+    // Start processing frames
+    processVideoFrame();
+  } catch (error) {
+    console.error(
+      `Failed to start camera stream with device ID: ${deviceId}`,
+      error
+    );
+    alert(`Failed to start camera stream: ${error.message}`);
+  }
+}
+
+// Event Listener for Camera Ports Dropdown Change
+cameraPortsDropdown.addEventListener("change", (event) => {
+  const selectedDeviceId = event.target.value;
+  if (selectedDeviceId === "") {
+    console.log("No camera selected.");
+    if (currentStream) {
+      currentStream.getTracks().forEach((track) => track.stop());
+      currentStream = null;
+      videoElement.srcObject = null;
+    }
+    return;
+  }
+  console.log(`Camera selected: Device ID = ${selectedDeviceId}`);
+  startCameraStream(selectedDeviceId);
 });
-camera.start();
+
+// Initialize Camera Ports on Page Load
+window.addEventListener("load", () => {
+  if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+    populateCameraPorts();
+
+    // Listen for device changes to update camera list dynamically
+    navigator.mediaDevices.addEventListener("devicechange", () => {
+      console.log("Device change detected. Updating camera list.");
+      populateCameraPorts();
+    });
+  } else {
+    console.warn("Media Devices API not supported.");
+    cameraPortsDropdown.innerHTML =
+      '<option value="">-- Media Devices API Not Supported --</option>';
+  }
+
+  // MIDI Access Initialization
+  if (navigator.requestMIDIAccess) {
+    navigator
+      .requestMIDIAccess()
+      .then(onMIDISuccess, onMIDIFailure)
+      .catch(() => {
+        // If automatic request fails, show the overlay
+        midiOverlay.style.display = "flex";
+      });
+  } else {
+    alert("Web MIDI API is not supported in this browser.");
+  }
+
+  // Synchronize Control Groups
+  synchronizeControls();
+});
+
+// =========================
+// MIDI Handling
+// =========================
 
 // Function to handle MIDI Access Success
 function onMIDISuccess(access) {
@@ -199,18 +399,18 @@ function populateMIDIPorts() {
   // Update MIDI Status Indicator
   if (outputs.length === 0) {
     midiStatus.textContent = "MIDI Status: No Outputs Available";
-    midiStatus.classList.remove("connected");
-    midiStatus.classList.add("disconnected");
+    midiStatus.classList.remove("connected", "on");
+    midiStatus.classList.add("disconnected", "off");
     disconnectMIDIBtn.disabled = true;
   } else if (!midiOutput) {
     midiStatus.textContent = "MIDI Status: Disconnected";
-    midiStatus.classList.add("disconnected");
-    midiStatus.classList.remove("connected");
+    midiStatus.classList.remove("connected", "on");
+    midiStatus.classList.add("disconnected", "off");
     disconnectMIDIBtn.disabled = true;
   } else {
     midiStatus.textContent = "MIDI Status: Connected";
-    midiStatus.classList.add("connected");
-    midiStatus.classList.remove("disconnected");
+    midiStatus.classList.remove("disconnected", "off");
+    midiStatus.classList.add("connected", "on");
     disconnectMIDIBtn.disabled = false;
   }
 }
@@ -219,31 +419,16 @@ function populateMIDIPorts() {
 function updateMIDIStatus() {
   if (midiOutput) {
     midiStatus.textContent = "MIDI Status: Connected";
-    midiStatus.classList.add("connected");
-    midiStatus.classList.remove("disconnected");
+    midiStatus.classList.remove("disconnected", "off");
+    midiStatus.classList.add("connected", "on");
     disconnectMIDIBtn.disabled = false;
   } else {
     midiStatus.textContent = "MIDI Status: Disconnected";
-    midiStatus.classList.add("disconnected");
-    midiStatus.classList.remove("connected");
+    midiStatus.classList.remove("connected", "on");
+    midiStatus.classList.add("disconnected", "off");
     disconnectMIDIBtn.disabled = true;
   }
 }
-
-// Automatically Request MIDI Access on Page Load
-window.addEventListener("load", () => {
-  if (navigator.requestMIDIAccess) {
-    navigator
-      .requestMIDIAccess()
-      .then(onMIDISuccess, onMIDIFailure)
-      .catch(() => {
-        // If automatic request fails, show the overlay
-        midiOverlay.style.display = "flex";
-      });
-  } else {
-    alert("Web MIDI API is not supported in this browser.");
-  }
-});
 
 // Event Listener for Allow MIDI Access Button in Overlay
 allowMIDIBtn.addEventListener("click", () => {
@@ -276,8 +461,8 @@ midiPortsDropdown.addEventListener("change", (event) => {
   } else {
     console.log("Selected MIDI Output not found.");
     midiStatus.textContent = "MIDI Status: Disconnected";
-    midiStatus.classList.remove("connected");
-    midiStatus.classList.add("disconnected");
+    midiStatus.classList.remove("connected", "on");
+    midiStatus.classList.add("disconnected", "off");
   }
 });
 
@@ -293,10 +478,16 @@ disconnectMIDIBtn.addEventListener("click", () => {
   }
 });
 
-// Function to send MIDI messages with throttling and validation
-let lastMIDITime = 0;
-const midiThrottleInterval = 10; // in milliseconds (~100 FPS)
+// =========================
+// MIDI Message Sending
+// =========================
 
+/**
+ * Sends a MIDI message with throttling and validation.
+ * @param {number} command - MIDI command byte.
+ * @param {number} controller - MIDI controller number.
+ * @param {number} value - MIDI controller value.
+ */
 function sendMIDIMessage(command, controller, value) {
   const currentTime = performance.now();
   if (currentTime - lastMIDITime >= midiThrottleInterval) {
@@ -306,13 +497,15 @@ function sendMIDIMessage(command, controller, value) {
 
     try {
       if (midiOutput) {
+        // Ensure value is a valid number
+        if (isNaN(clampedValue)) {
+          console.warn(`Attempted to send invalid MIDI value: ${clampedValue}`);
+          return;
+        }
+
         midiOutput.send([command, clampedController, clampedValue]);
         lastMIDITime = currentTime;
-        console.log(
-          `Sent MIDI Message: [${command.toString(
-            16
-          )}, ${clampedController}, ${clampedValue}]`
-        );
+        // Removed excessive logging for performance
       } else {
         console.warn(
           "Attempted to send MIDI message, but no MIDI output is connected."
@@ -324,163 +517,261 @@ function sendMIDIMessage(command, controller, value) {
   }
 }
 
-// Helper function to clamp values within a range
+/**
+ * Clamps a value between a minimum and maximum.
+ * @param {number} value - The value to clamp.
+ * @param {number} min - The minimum allowable value.
+ * @param {number} max - The maximum allowable value.
+ * @returns {number} - The clamped value.
+ */
 function clamp(value, min, max) {
+  if (typeof value !== "number" || isNaN(value)) {
+    return min;
+  }
   return Math.max(min, Math.min(max, value));
 }
 
-// Function to calculate angle between three points in degrees
+// =========================
+// Gesture Detection
+// =========================
+
+/**
+ * Calculates the angle between three points.
+ * @param {Object} p1 - First point with x and y properties.
+ * @param {Object} p2 - Second point with x and y properties (vertex).
+ * @param {Object} p3 - Third point with x and y properties.
+ * @returns {number} - The angle in degrees.
+ */
 function calculateAngle(p1, p2, p3) {
-  const a = { x: p1.x - p2.x, y: p1.y - p2.y };
-  const b = { x: p3.x - p2.x, y: p3.y - p2.y };
+  const radians =
+    Math.atan2(p3.y - p2.y, p3.x - p2.x) - Math.atan2(p1.y - p2.y, p1.x - p2.x);
+  let angle = Math.abs(radians * (180.0 / Math.PI));
 
-  const dotProduct = a.x * b.x + a.y * b.y;
-  const magnitudeA = Math.sqrt(a.x * a.x + a.y * a.y);
-  const magnitudeB = Math.sqrt(b.x * b.x + b.y * b.y);
-
-  if (magnitudeA === 0 || magnitudeB === 0) return 0; // Prevent division by zero
-
-  const angleRadians = Math.acos(
-    clamp(dotProduct / (magnitudeA * magnitudeB), -1, 1)
-  );
-  const angleDegrees = angleRadians * (180 / Math.PI);
-
-  return angleDegrees;
+  if (angle > 180.0) {
+    angle = 360 - angle;
+  }
+  return angle;
 }
 
-// Function to detect if a hand is pointing up with thumb overlap
-function isPointingUp(handLandmarks, isRightHand) {
-  // Index finger must be extended
-  const indexExtended = isFingerExtended(
-    handLandmarks,
-    5,
-    6,
-    7,
-    8,
-    pointingUpStrictness
-  );
-  console.log(`Index Finger Extended: ${indexExtended}`);
-
-  if (!indexExtended) {
+/**
+ * Detects if the hand is making a pointing up gesture.
+ * @param {Array} landmarks - Hand landmarks.
+ * @param {number} strictness - Strictness level (1-10) for gesture sensitivity.
+ * @returns {boolean} - Whether the pointing gesture is detected.
+ */
+function isPointingUp(landmarks, strictness) {
+  if (!landmarks || landmarks.length < 21) {
+    console.warn("Invalid hand landmarks detected.");
     return false;
   }
 
-  // Middle finger should not be extended
-  const middleExtended = isFingerExtended(
-    handLandmarks,
+  // Check if the index finger is extended
+  const indexExtended = isFingerExtended(
+    landmarks,
+    5, // INDEX_FINGER_MCP
+    6, // INDEX_FINGER_PIP
+    7, // INDEX_FINGER_DIP
+    8, // INDEX_FINGER_TIP
+    strictness
+  );
+
+  // Check that all other fingers (middle, ring, pinky) are tightly curled
+  const middleCurled = isFingerTightlyCurled(
+    landmarks,
     9,
     10,
     11,
-    12,
-    pointingUpStrictness
+    12, // MIDDLE_FINGER_MCP, PIP, DIP, TIP
+    strictness
   );
-  console.log(`Middle Finger Extended: ${middleExtended}`);
-
-  if (middleExtended) {
-    return false; // Middle finger extended
-  }
-
-  // Ring finger should not be extended
-  const ringExtended = isFingerExtended(
-    handLandmarks,
+  const ringCurled = isFingerTightlyCurled(
+    landmarks,
     13,
     14,
     15,
-    16,
-    pointingUpStrictness
+    16, // RING_FINGER_MCP, PIP, DIP, TIP
+    strictness
   );
-  console.log(`Ring Finger Extended: ${ringExtended}`);
-
-  if (ringExtended) {
-    return false; // Ring finger extended
-  }
-
-  // Pinky finger should not be extended
-  const pinkyExtended = isFingerExtended(
-    handLandmarks,
+  const pinkyCurled = isFingerTightlyCurled(
+    landmarks,
     17,
     18,
     19,
-    20,
-    pointingUpStrictness
+    20, // PINKY_FINGER_MCP, PIP, DIP, TIP
+    strictness
   );
-  console.log(`Pinky Finger Extended: ${pinkyExtended}`);
 
-  if (pinkyExtended) {
-    return false; // Pinky finger extended
-  }
+  // Ensure the index finger tip is above the wrist (natural pointing condition)
+  const wrist = landmarks[0];
+  const indexTip = landmarks[8];
+  const indexAboveWrist = indexTip.y < wrist.y;
 
-  // Thumb should not be extended beyond a certain point
-  const thumbExtended = isThumbExtended(
-    handLandmarks,
-    isRightHand,
-    pointingUpStrictness
-  );
-  console.log(`Thumb Extended: ${thumbExtended}`);
+  // Check thumb condition - Ensure the thumb is curled (overlapping/curling)
+  const thumbCurled = isThumbCurled(landmarks, strictness);
 
-  if (thumbExtended) {
-    return false; // Thumb is extended
-  }
+  // Pointing up gesture requires:
+  // - Index finger extended
+  // - Middle, ring, and pinky fingers tightly curled
+  // - Thumb curled (overlapping/curling)
+  // - Index finger tip above wrist
+  const isPointingUpGesture =
+    indexExtended &&
+    thumbCurled &&
+    middleCurled &&
+    ringCurled &&
+    pinkyCurled &&
+    indexAboveWrist;
 
-  // **New Check: Thumb Overlaps Other Fingers**
-  const thumbTip = handLandmarks[4];
-  const indexMCP = handLandmarks[5];
-  const indexPIP = handLandmarks[6];
-  const indexTIP = handLandmarks[8];
-
-  // Calculate distance between thumb tip and index PIP joint
-  const distanceThumbIndex = Math.hypot(
-    thumbTip.x - indexPIP.x,
-    thumbTip.y - indexPIP.y,
-    thumbTip.z - indexPIP.z
-  );
   console.log(
-    `Distance between Thumb Tip and Index PIP: ${distanceThumbIndex.toFixed(3)}`
+    `Gesture Detection: Index Extended=${indexExtended}, Thumb Curled=${thumbCurled}, Middle Tightly Curled=${middleCurled}, Ring Tightly Curled=${ringCurled}, Pinky Tightly Curled=${pinkyCurled}, Index Above Wrist=${indexAboveWrist} => Gesture=${isPointingUpGesture}`
   );
 
-  // Define a threshold for overlapping (adjust based on testing)
-  const overlapThreshold = 0.05; // Adjust as needed
-
-  if (distanceThumbIndex > overlapThreshold) {
-    console.log("Thumb does not overlap with index finger.");
-    return false;
-  }
-
-  // **New Checks for Hand Orientation and Finger Position**
-
-  // Calculate the angle between wrist (0) and index finger MCP (5) relative to the horizontal
-  const wrist = handLandmarks[0];
-  const angleRadians = Math.atan2(indexMCP.y - wrist.y, indexMCP.x - wrist.x);
-  let angleDegrees = (angleRadians * 180) / Math.PI;
-
-  // Normalize angle to [0, 360)
-  if (angleDegrees < 0) angleDegrees += 360;
-
-  console.log(`Hand Angle: ${angleDegrees.toFixed(2)}°`);
-
-  // Define acceptable angle range for pointing up (e.g., 75° to 105°)
-  const minAngle = 75;
-  const maxAngle = 105;
-
-  if (angleDegrees < minAngle || angleDegrees > maxAngle) {
-    console.log("Hand is not oriented upwards.");
-    return false;
-  }
-
-  // **Additional Check: Index Finger Tip Above Wrist**
-  if (indexTIP.y >= wrist.y - 0.05) {
-    // Adjust the threshold as needed
-    console.log("Index finger tip is not above the wrist.");
-    return false;
-  }
-
-  // Only index finger is extended, thumb overlaps, and hand is oriented upwards
-  return true;
+  return isPointingUpGesture;
 }
 
-// Function to detect if a hand is wide open
+/**
+ * Determines if a specific finger is extended based on landmark positions and strictness.
+ * @param {Array} handLandmarks - Array of hand landmarks.
+ * @param {number} mcp - MCP joint index of the finger.
+ * @param {number} pip - PIP joint index of the finger.
+ * @param {number} dip - DIP joint index of the finger.
+ * @param {number} tip - TIP joint index of the finger.
+ * @param {number} strictness - Strictness level (1-10).
+ * @returns {boolean} - True if the finger is extended, else false.
+ */
+function isFingerExtended(handLandmarks, mcp, pip, dip, tip, strictness) {
+  // In image coordinates, y increases downward
+  // Finger is extended if tip.y < pip.y
+  // Strictness adjusts the required y difference
+
+  const yDifference = handLandmarks[pip].y - handLandmarks[tip].y;
+
+  // Define a threshold based on strictness (higher strictness requires larger difference)
+  const baseThreshold = 0.015; // Increased base threshold for stricter extension
+  const delta = 0.01; // Adjusted delta for smoother scaling
+
+  const threshold = baseThreshold + delta * (strictness - 1);
+
+  // Finger is extended if the y difference exceeds the threshold
+  const isExtended = yDifference > threshold;
+
+  // Log the finger extension status for debugging
+  console.log(
+    `Finger [MCP:${mcp} PIP:${pip} DIP:${dip} TIP:${tip}] yDifference: ${yDifference.toFixed(
+      3
+    )} | Threshold: ${threshold.toFixed(3)} | Extended: ${isExtended}`
+  );
+
+  return isExtended;
+}
+
+/**
+ * Determines if a specific finger is tightly curled based on landmark positions and strictness.
+ * Ensures that the fingertip is approximately ⅔ down to the palm base.
+ * @param {Array} handLandmarks - Array of hand landmarks.
+ * @param {number} mcp - MCP joint index of the finger.
+ * @param {number} pip - PIP joint index of the finger.
+ * @param {number} dip - DIP joint index of the finger.
+ * @param {number} tip - TIP joint index of the finger.
+ * @param {number} strictness - Strictness level (1-10).
+ * @returns {boolean} - True if the finger is tightly curled with fingertip near desired position, else false.
+ */
+function isFingerTightlyCurled(handLandmarks, mcp, pip, dip, tip, strictness) {
+  // In image coordinates, y increases downward
+  // Finger is tightly curled if tip.y is approximately ⅔ down to the palm
+  // AND the fingertip is at the desired distance from the wrist
+
+  // Calculate the expected y-coordinate for ⅔ down to the palm
+  const wrist = handLandmarks[0];
+  const mcpLandmark = handLandmarks[mcp];
+  const expectedTipY = wrist.y + (mcpLandmark.y - wrist.y) * (2 / 3);
+
+  // Allow a margin based on strictness
+  const margin = 0.02 * (11 - strictness); // Less margin as strictness increases
+
+  const actualTipY = handLandmarks[tip].y;
+
+  const isApproachingTarget =
+    actualTipY > expectedTipY - margin && actualTipY < expectedTipY + margin;
+
+  // Additionally, ensure fingertip is not too close to the wrist
+  const fingertip = handLandmarks[tip];
+  const distanceToWrist = Math.sqrt(
+    Math.pow(fingertip.x - wrist.x, 2) + Math.pow(fingertip.y - wrist.y, 2)
+  );
+
+  // Define a distance threshold to prevent fingertips from being too close
+  const distanceThreshold = 0.15; // Adjust as needed
+
+  const isAtProperDistance = distanceToWrist > distanceThreshold;
+
+  // Log the finger curled status for debugging
+  console.log(
+    `Finger [MCP:${mcp} PIP:${pip} DIP:${dip} TIP:${tip}] Actual Tip Y: ${actualTipY.toFixed(
+      3
+    )} | Expected Tip Y: ${expectedTipY.toFixed(
+      3
+    )} | Within Margin: ${isApproachingTarget}`
+  );
+  console.log(
+    `Finger [TIP:${tip}] Distance to Wrist: ${distanceToWrist.toFixed(
+      3
+    )} | Threshold: ${distanceThreshold.toFixed(
+      3
+    )} | At Proper Distance: ${isAtProperDistance}`
+  );
+
+  // Finger is considered tightly curled if it's approaching the target position and at the proper distance
+  return isApproachingTarget && isAtProperDistance;
+}
+
+/**
+ * Determines if the thumb is curled based on its position relative to the palm center.
+ * The thumb should be in the middle of the palm when curled.
+ * @param {Array} handLandmarks - Array of hand landmarks.
+ * @param {number} strictness - Strictness level (1-10).
+ * @returns {boolean} - True if thumb is curled in the middle of the palm, else false.
+ */
+function isThumbCurled(handLandmarks, strictness) {
+  // Retrieve necessary landmarks
+  const thumbTIP = handLandmarks[4]; // Thumb TIP
+  const palmCenter = {
+    x: (handLandmarks[0].x + handLandmarks[9].x) / 2, // Average of wrist and MCP of middle finger
+    y: (handLandmarks[0].y + handLandmarks[9].y) / 2,
+  };
+
+  // Calculate Euclidean distance between thumb TIP and palm center
+  const distanceTipToCenter = Math.sqrt(
+    Math.pow(thumbTIP.x - palmCenter.x, 2) +
+      Math.pow(thumbTIP.y - palmCenter.y, 2)
+  );
+
+  // Define a distance threshold based on strictness
+  // Higher strictness requires the thumb TIP to be closer to the palm center
+  const baseThreshold = 0.15; // Increased base distance threshold for less strictness
+  const delta = 0.005; // Increment per strictness level
+
+  const threshold = baseThreshold - delta * (strictness - 1);
+  const finalThreshold = Math.max(threshold, 0.1); // Prevent threshold from being too low
+
+  console.log(
+    `Thumb TIP to Palm Center Distance: ${distanceTipToCenter.toFixed(
+      3
+    )} | Threshold: ${finalThreshold.toFixed(3)} | Curled: ${
+      distanceTipToCenter < finalThreshold
+    }`
+  );
+
+  // Thumb is considered curled if the distance is below the threshold
+  return distanceTipToCenter < finalThreshold;
+}
+
+/**
+ * Checks if the hand is wide open by verifying all fingers are extended.
+ * @param {Array} handLandmarks - Array of hand landmarks.
+ * @returns {boolean} - True if all fingers are extended, else false.
+ */
 function isHandWideOpen(handLandmarks) {
-  // Adjusted to account for strictness level
   let allFingersExtended = true;
 
   // Check all fingers including thumb
@@ -509,53 +800,239 @@ function isHandWideOpen(handLandmarks) {
   return allFingersExtended;
 }
 
-// Helper function to determine if a finger is extended with strictness
-function isFingerExtended(handLandmarks, mcp, pip, dip, tip, strictness) {
-  // In image coordinates, y increases downward
-  // Finger is extended if tip.y < pip.y
-  // Strictness adjusts the required y difference
+// =========================
+// Modulation Wheel Control
+// =========================
 
-  const yDifference = handLandmarks[pip].y - handLandmarks[tip].y;
+/**
+ * Toggles the modulation wheel on or off.
+ */
+function toggleModulationWheel() {
+  const currentTime = Date.now();
+  if (currentTime - lastToggleTime < toggleDebounceTime) {
+    // Prevent toggling if within debounce period
+    console.log("Toggle action is debounced.");
+    return;
+  }
 
-  // Define a threshold based on strictness (higher strictness requires larger difference)
-  // Linear scaling: baseThreshold + (delta * (strictness - 1))
-  const baseThreshold = 0.005;
-  const delta = 0.015; // Increment per strictness level
-  const threshold = baseThreshold + delta * (strictness - 1);
+  modulationWheelOn = !modulationWheelOn;
+  console.log(`Modulation Wheel Toggled: ${modulationWheelOn ? "On" : "Off"}`);
 
-  console.log(
-    `Finger (MCP: ${mcp}) yDifference: ${yDifference.toFixed(
-      3
-    )} Threshold: ${threshold.toFixed(3)}`
-  );
+  // Update Modulation Status Text and Classes
+  modulationStatus.textContent = `Modulation Wheel: ${
+    modulationWheelOn ? "ON" : "OFF"
+  }`;
 
-  return yDifference > threshold;
+  // Toggle 'on' and 'off' classes to align with CSS
+  modulationStatus.classList.toggle("on", modulationWheelOn);
+  modulationStatus.classList.toggle("off", !modulationWheelOn);
+
+  if (!modulationWheelOn) {
+    // Freeze the current modulation value
+    const lastValue =
+      modulationValuesQueue.length > 0
+        ? modulationValuesQueue[modulationValuesQueue.length - 1]
+        : 0;
+    modulationValueDisplay.textContent = `Modulation Value: ${lastValue}`;
+    console.log("Modulation Wheel turned OFF. Value frozen.");
+  }
+
+  // Update the last toggle time
+  lastToggleTime = currentTime;
 }
 
-// Function to detect if the thumb is extended using angle between thumb joints
-function isThumbExtended(handLandmarks, isRightHand, strictness) {
-  const thumbMCP = handLandmarks[2];
-  const thumbIP = handLandmarks[3];
-  const thumbTip = handLandmarks[4];
+// =========================
+// Gesture Detection and Handling
+// =========================
 
-  const angle = calculateAngle(thumbMCP, thumbIP, thumbTip);
+/**
+ * Handles the results from MediaPipe Hands.
+ * @param {Object} results - The results object from MediaPipe Hands.
+ */
+function onResults(results) {
+  try {
+    // Increment frame count
+    frameCount++;
 
-  // Define thresholds: larger angles indicate more extension
-  // These values need calibration
-  // For example: angle > 160 => extended; angle < 120 => curled
-  // Adjust based on strictness level
-  const baseExtendedThreshold = 160; // degrees
-  const delta = 10; // degrees per strictness level
-  const extendedThreshold = baseExtendedThreshold - delta * (strictness - 1);
+    // Current time
+    const currentTime = performance.now();
 
-  console.log(
-    `Thumb Angle: ${angle.toFixed(2)} Threshold: ${extendedThreshold}`
-  );
+    // Calculate elapsed time in seconds
+    const elapsedTime = (currentTime - lastTime) / 1000;
 
-  return angle > extendedThreshold;
+    // Update FPS every second
+    if (elapsedTime >= 1) {
+      fps = frameCount / elapsedTime;
+      fpsCounter.textContent = `FPS: ${fps.toFixed(1)}`;
+      // Reset counters
+      frameCount = 0;
+      lastTime = currentTime;
+    }
+
+    // Reset transformations and clear the canvas
+    canvasCtx.resetTransform();
+    canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+    // Draw the video frame covering the entire canvas
+    canvasCtx.drawImage(
+      results.image,
+      0,
+      0,
+      canvasElement.width,
+      canvasElement.height
+    );
+
+    // Reset hand detection statuses
+    leftHandDetected = false;
+    rightHandDetected = false;
+    leftHandOpen = false;
+    rightHandOpen = false;
+
+    if (results.multiHandLandmarks && results.multiHandedness) {
+      results.multiHandedness.forEach((hand, index) => {
+        const landmarks = results.multiHandLandmarks[index];
+        const handedness = hand.label; // "Left" or "Right"
+
+        // **Invert the handedness labels to account for CSS mirroring**
+        const isRightHand = handedness === "Left"; // Inverted due to mirroring
+        const isLeftHand = handedness === "Right"; // Inverted due to mirroring
+
+        // Log detected hands
+        console.log(
+          `Detected Hand: ${
+            isLeftHand ? "Left" : isRightHand ? "Right" : "Unknown"
+          }`
+        );
+
+        if (isRightHand) {
+          rightHandDetected = true;
+          rightHandStatus.textContent = "Right Hand: Detected";
+        }
+
+        if (isLeftHand) {
+          leftHandDetected = true;
+          leftHandStatus.textContent = "Left Hand: Detected";
+        }
+
+        // Draw hand landmarks with enhanced visual quality
+        drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {
+          color: isRightHand ? "#00FF00" : "#FF0000",
+          lineWidth: 3,
+        });
+        drawLandmarks(canvasCtx, landmarks, {
+          color: isRightHand ? "#00FF00" : "#FF0000",
+          lineWidth: 2,
+          radius: 3,
+        });
+
+        // **Add Visual Indicators on Hand Landmarks**
+        // [Existing code for drawing landmarks and annotations]
+
+        // Update Hand State (Open/Closed)
+        const handOpen = isHandWideOpen(landmarks);
+        if (isRightHand) {
+          rightHandState.textContent = `Right Hand State: ${
+            handOpen ? "Open" : "Closed"
+          }`;
+          rightHandState.classList.toggle("active", handOpen);
+          rightHandOpen = handOpen;
+        }
+        if (isLeftHand) {
+          leftHandState.textContent = `Left Hand State: ${
+            handOpen ? "Open" : "Closed"
+          }`;
+          leftHandState.classList.toggle("active", handOpen);
+          leftHandOpen = handOpen;
+        }
+
+        // **Process Gestures Only for Selected Hand**
+        let isSelectedHand = false;
+        if (selectedHand === "left" && isLeftHand) {
+          isSelectedHand = true;
+        } else if (selectedHand === "right" && isRightHand) {
+          isSelectedHand = true;
+        }
+
+        if (isSelectedHand) {
+          // Initialize or retrieve gesture state for the selected hand
+          if (typeof gestureState === "undefined") {
+            gestureState = {
+              isPointingUpActive: false,
+              pointingUpCounter: 0,
+            };
+          }
+
+          // **Pointing Up Gesture Detection**
+          if (isPointingUp(landmarks, pointingUpStrictness)) {
+            gestureState.pointingUpCounter++;
+            // Update the progress bar
+            const progressPercentage = Math.min(
+              (gestureState.pointingUpCounter / gestureConfirmationThreshold) *
+                100,
+              100
+            );
+            gestureProgressBar.style.width = `${progressPercentage}%`;
+
+            if (
+              gestureState.pointingUpCounter >= gestureConfirmationThreshold &&
+              !gestureState.isPointingUpActive
+            ) {
+              toggleModulationWheel(); // Activate or deactivate modulation wheel
+              gestureProgressBar.style.width = `0%`; // Reset progress bar
+              gestureState.pointingUpCounter = 0; // Reset counter
+              gestureState.isPointingUpActive = true; // Prevent immediate re-toggling
+            }
+          } else {
+            gestureState.pointingUpCounter = 0; // Reset counter if gesture not detected
+            gestureState.isPointingUpActive = false; // Reset gesture active state
+            gestureProgressBar.style.width = `0%`; // Reset progress bar
+          }
+
+          // **Handle MIDI Controls Only for Selected Hand**
+          if (modulationWheelOn && handOpen && midiOutput) {
+            const modulationValue = calculateModulationValue(landmarks);
+            // Update Modulation Value Display
+            modulationValueDisplay.textContent = `Modulation Value: ${modulationValue}`;
+            // Send MIDI Control Change for Modulation Wheel (CC1) on Channel 1
+            sendMIDIMessage(0xb0, 1, modulationValue); // 0xB0 = CC1 on channel 1
+          }
+        }
+        // No action needed when modulationWheelOn is false and hand is open
+      });
+    } else {
+      // No hands detected
+      leftHandStatus.textContent = "Left Hand: Not Detected";
+      rightHandStatus.textContent = "Right Hand: Not Detected";
+      leftHandState.textContent = "Left Hand State: Closed";
+      rightHandState.textContent = "Right Hand State: Closed";
+      modulationValueDisplay.textContent = `Modulation Value: 0`;
+      gestureProgressBar.style.width = `0%`; // Reset progress bar
+      gestureState = {
+        isPointingUpActive: false,
+        pointingUpCounter: 0,
+      };
+    }
+
+    // Reset status if hands are not detected
+    if (!leftHandDetected) {
+      leftHandStatus.textContent = "Left Hand: Not Detected";
+      leftHandState.textContent = "Left Hand State: Closed";
+    }
+    if (!rightHandDetected) {
+      rightHandStatus.textContent = "Right Hand: Not Detected";
+      rightHandState.textContent = "Right Hand State: Closed";
+    }
+  } catch (error) {
+    console.error("Error in onResults function:", error);
+    // Optionally, implement more sophisticated error handling here
+  }
 }
 
-// Function to calculate modulation wheel value based on hand distance
+/**
+ * Calculates the modulation wheel value based on hand distance.
+ * @param {Array} handLandmarks - Array of hand landmarks.
+ * @returns {number} - The modulation value (0-127).
+ */
 function calculateModulationValue(handLandmarks) {
   // Calculate the bounding box height as a proxy for distance
   let minY = Infinity;
@@ -567,29 +1044,20 @@ function calculateModulationValue(handLandmarks) {
   });
 
   const boundingBoxHeight = maxY - minY;
-  console.log(`Bounding Box Height: ${boundingBoxHeight.toFixed(3)}`);
 
-  // Clamp the height within min and max distances
-  const clampedHeight = clamp(boundingBoxHeight, minDistance, maxDistance);
-  console.log(`Clamped Height: ${clampedHeight.toFixed(3)}`);
-
-  // Normalize such that closer hands (larger clampedHeight) have higher normalized values
-  const normalized =
-    (clampedHeight - minDistance) / (maxDistance - minDistance);
-  console.log(`Normalized Value: ${normalized.toFixed(3)}`);
+  // Normalize boundingBoxHeight between minDistance and maxDistance
+  let normalized =
+    (boundingBoxHeight - minDistance) / (maxDistance - minDistance);
 
   // Clamp normalized value between 0 and 1
-  const clampedNormalized = clamp(normalized, 0, 1);
-  console.log(`Clamped Normalized Value: ${clampedNormalized.toFixed(3)}`);
+  normalized = clamp(normalized, 0, 1);
 
-  // **Direct Mapping:** Closer hand -> higher modulation value
-  let modulationValue = Math.floor(clampedNormalized * 127);
-  console.log(`Modulation Value (Before Reversal): ${modulationValue}`);
+  // Map to MIDI value (0-127)
+  let modulationValue = Math.floor(normalized * 127);
 
-  // **Check if Reversal is Enabled**
+  // Check if Reversal is Enabled
   if (reverseModulationCheckbox.checked) {
-    modulationValue = Math.floor((1 - clampedNormalized) * 127);
-    console.log(`Modulation Value (After Reversal): ${modulationValue}`);
+    modulationValue = Math.floor((1 - normalized) * 127);
   }
 
   // Smoothing (optional)
@@ -601,207 +1069,93 @@ function calculateModulationValue(handLandmarks) {
   // Calculate average for smoothing
   const sum = modulationValuesQueue.reduce((a, b) => a + b, 0);
   const average = Math.floor(sum / modulationValuesQueue.length);
-  console.log(`Modulation Value (After Smoothing): ${average}`);
 
   return average;
 }
 
-// Function to handle MediaPipe results
-function onResults(results) {
-  // Increment frame count
-  frameCount++;
+/**
+ * Clamps a value between a minimum and maximum.
+ * @param {number} value - The value to clamp.
+ * @param {number} min - The minimum allowable value.
+ * @param {number} max - The maximum allowable value.
+ * @returns {number} - The clamped value.
+ */
+function clamp(value, min, max) {
+  if (typeof value !== "number" || isNaN(value)) {
+    return min;
+  }
+  return Math.max(min, Math.min(max, value));
+}
 
-  // Current time
-  const currentTime = performance.now();
+// =========================
+// Initialization Functions
+// =========================
 
-  // Calculate elapsed time in seconds
-  const elapsedTime = (currentTime - lastTime) / 1000;
-
-  // Update FPS every second
-  if (elapsedTime >= 1) {
-    fps = frameCount / elapsedTime;
-    fpsCounter.textContent = `FPS: ${fps.toFixed(1)}`;
-    console.log(`FPS: ${fps.toFixed(1)}`); // Log FPS to console
-    // Reset counters
-    frameCount = 0;
-    lastTime = currentTime;
+/**
+ * Synchronizes all control groups (distance and strictness).
+ */
+function synchronizeControls() {
+  if (
+    minDistanceSlider &&
+    minDistanceNumber &&
+    maxDistanceSlider &&
+    maxDistanceNumber
+  ) {
+    syncSliderAndNumber(minDistanceSlider, minDistanceNumber, true);
+    syncSliderAndNumber(maxDistanceSlider, maxDistanceNumber, false);
+  } else {
+    console.warn(
+      "Distance controls are missing in the HTML. Please ensure that elements with IDs 'min-distance', 'min-distance-number', 'max-distance', and 'max-distance-number' exist."
+    );
   }
 
-  // Reset transformations and clear the canvas
-  canvasCtx.resetTransform();
-  canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+  if (overlapThresholdSlider && overlapThresholdNumber) {
+    syncOverlapThreshold();
+  } else {
+    console.warn(
+      "Overlap Threshold controls are missing in the HTML. Please ensure that elements with IDs 'overlap-threshold' and 'overlap-threshold-number' exist."
+    );
+  }
 
-  // Draw the video frame covering the entire canvas
-  canvasCtx.drawImage(
-    results.image,
-    0,
-    0,
-    canvasElement.width,
-    canvasElement.height
+  // Listen for changes in strictness level dropdowns
+  const openHandStrictnessDropdown = document.getElementById(
+    "open-hand-strictness"
+  );
+  const pointingUpStrictnessDropdown = document.getElementById(
+    "pointing-up-strictness"
   );
 
-  let leftHandDetected = false;
-  let rightHandDetected = false;
-  let leftHandOpen = false;
-  let rightHandOpen = false;
-
-  if (results.multiHandLandmarks && results.multiHandedness) {
-    results.multiHandedness.forEach((hand, index) => {
-      // Invert the hand label due to mirroring
-      const isRightHand = hand.label === "Left";
-      const isLeftHand = hand.label === "Right";
-
-      if (isRightHand) {
-        rightHandDetected = true;
-        rightHandStatus.textContent = "Right Hand: Detected";
-      }
-
-      if (isLeftHand) {
-        leftHandDetected = true;
-        leftHandStatus.textContent = "Left Hand: Detected";
-      }
-
-      // Draw hand landmarks with enhanced visual quality
-      drawConnectors(
-        canvasCtx,
-        results.multiHandLandmarks[index],
-        HAND_CONNECTIONS,
-        { color: isRightHand ? "#00FF00" : "#FF0000", lineWidth: 3 }
-      );
-      drawLandmarks(canvasCtx, results.multiHandLandmarks[index], {
-        color: isRightHand ? "#00FF00" : "#FF0000",
-        lineWidth: 2,
-        radius: 3,
-      });
-
-      const handLandmarks = results.multiHandLandmarks[index];
-
-      // Update Hand State (Open/Closed)
-      const handOpen = isHandWideOpen(handLandmarks);
-      if (isRightHand) {
-        rightHandState.textContent = `Right Hand State: ${
-          handOpen ? "Open" : "Closed"
-        }`;
-        if (handOpen) {
-          rightHandState.classList.add("active");
-        } else {
-          rightHandState.classList.remove("active");
-        }
-        rightHandOpen = handOpen;
-        isHandOpenActive = handOpen;
-      }
-      if (isLeftHand) {
-        leftHandState.textContent = `Left Hand State: ${
-          handOpen ? "Open" : "Closed"
-        }`;
-        if (handOpen) {
-          leftHandState.classList.add("active");
-        } else {
-          leftHandState.classList.remove("active");
-        }
-        leftHandOpen = handOpen;
-        isHandOpenActive = handOpen;
-      }
-
-      // Gesture Control: Pointing Up to Toggle Modulation Wheel
-      if (isPointingUp(handLandmarks, isRightHand)) {
-        pointingUpCounter++;
-        console.log(`Pointing Up Counter: ${pointingUpCounter}`);
-
-        // Update the progress bar
-        const progressPercentage = Math.min(
-          (pointingUpCounter / gestureConfirmationThreshold) * 100,
-          100
-        );
-        gestureProgressBar.style.width = `${progressPercentage}%`;
-
-        if (
-          pointingUpCounter >= gestureConfirmationThreshold &&
-          !isPointingUpActive
-        ) {
-          toggleModulationWheel();
-          gestureProgressBar.style.width = `0%`; // Reset after toggle
-        }
-      } else {
-        pointingUpCounter = 0; // Reset counter if gesture not detected
-        isPointingUpActive = false; // Reset gesture active state
-        gestureProgressBar.style.width = `0%`; // Reset progress bar
-      }
-
-      // Modulation Wheel Control based on Hand Distance and Gesture
-      if (modulationWheelOn && handOpen && midiOutput) {
-        const modulationValue = calculateModulationValue(handLandmarks);
-        console.log(`Modulation Wheel Value: ${modulationValue}`);
-        // Update Modulation Value Display
-        modulationValueDisplay.textContent = `Modulation Value: ${modulationValue}`;
-        // Send MIDI Control Change for Modulation Wheel (CC1) on Channel 1
-        sendMIDIMessage(0xb0, 1, modulationValue); // 0xB0 = CC1 on channel 1
-      } else if (!modulationWheelOn && handOpen && midiOutput) {
-        // Ensure modulation value remains frozen when modulation wheel is off
-        // Do not update the modulation value display
-      }
+  if (openHandStrictnessDropdown) {
+    openHandStrictnessDropdown.addEventListener("change", (event) => {
+      openHandStrictness = parseInt(event.target.value);
+      console.log(`Open Hand Strictness Level set to: ${openHandStrictness}`);
     });
   } else {
-    leftHandStatus.textContent = "Left Hand: Not Detected";
-    rightHandStatus.textContent = "Right Hand: Not Detected";
-    leftHandState.textContent = "Left Hand State: Closed";
-    rightHandState.textContent = "Right Hand State: Closed";
-    modulationValueDisplay.textContent = `Modulation Value: 0`;
-    pointingUpCounter = 0;
-    isPointingUpActive = false;
-    gestureProgressBar.style.width = `0%`; // Reset progress bar
+    console.warn(
+      "Open Hand Strictness Dropdown is missing in the HTML. Please ensure that element with ID 'open-hand-strictness' exists."
+    );
   }
 
-  // Reset status if hands are not detected
-  if (!leftHandDetected) {
-    leftHandStatus.textContent = "Left Hand: Not Detected";
-    leftHandState.textContent = "Left Hand State: Closed";
-  }
-  if (!rightHandDetected) {
-    rightHandStatus.textContent = "Right Hand: Not Detected";
-    rightHandState.textContent = "Right Hand State: Closed";
-  }
-
-  // Reset modulation value display if modulation wheel is off
-  if (!modulationWheelOn) {
-    // Keep the current modulation value displayed without updating
-    // No action needed as we freeze the value when toggling off
+  if (pointingUpStrictnessDropdown) {
+    pointingUpStrictnessDropdown.addEventListener("change", (event) => {
+      pointingUpStrictness = parseInt(event.target.value);
+      console.log(
+        `Pointing Up Strictness Level set to: ${pointingUpStrictness}`
+      );
+    });
+  } else {
+    console.warn(
+      "Pointing Up Strictness Dropdown is missing in the HTML. Please ensure that element with ID 'pointing-up-strictness' exists."
+    );
   }
 }
 
-// Function to toggle the Modulation Wheel
-function toggleModulationWheel() {
-  const currentTime = Date.now();
-  if (currentTime - lastGestureTime < gestureCooldown) {
-    // Prevent toggling if within cooldown period
-    return;
-  }
-
-  modulationWheelOn = !modulationWheelOn;
-  console.log(`Modulation Wheel Toggled: ${modulationWheelOn ? "On" : "Off"}`);
-
-  // Update Modulation Status Text and Classes
-  modulationStatus.textContent = `Modulation Wheel: ${
-    modulationWheelOn ? "ON" : "OFF"
-  }`;
-  modulationStatus.classList.toggle("connected", modulationWheelOn);
-  modulationStatus.classList.toggle("disconnected", !modulationWheelOn);
-
-  if (!modulationWheelOn) {
-    // Freeze the current modulation value
-    modulationValueDisplay.textContent = `Modulation Value: ${
-      modulationValuesQueue.length > 0
-        ? modulationValuesQueue[modulationValuesQueue.length - 1]
-        : 0
-    }`;
-  }
-
-  // Update the last gesture time
-  lastGestureTime = currentTime;
-  isPointingUpActive = true; // Set gesture as active to prevent immediate re-toggling
-}
-
-// Function to synchronize sliders and numerical inputs
+/**
+ * Synchronizes a slider and number input pair.
+ * @param {HTMLElement} slider - The slider input element.
+ * @param {HTMLElement} numberInput - The number input element.
+ * @param {boolean} isMin - Indicates if the pair is for minimum distance.
+ */
 function syncSliderAndNumber(slider, numberInput, isMin = true) {
   // When slider changes, update number input
   slider.addEventListener("input", (event) => {
@@ -815,7 +1169,8 @@ function syncSliderAndNumber(slider, numberInput, isMin = true) {
         slider.value = value.toFixed(3);
       }
       minDistance = value;
-      minDistanceNumber.value = value.toFixed(3);
+      numberInput.value = value.toFixed(3);
+      console.log(`Minimum Distance set to: ${minDistance}`);
     } else {
       // Ensure maxDistance does not go below minDistance
       if (value <= minDistance) {
@@ -823,7 +1178,8 @@ function syncSliderAndNumber(slider, numberInput, isMin = true) {
         slider.value = value.toFixed(3);
       }
       maxDistance = value;
-      maxDistanceNumber.value = value.toFixed(3);
+      numberInput.value = value.toFixed(3);
+      console.log(`Maximum Distance set to: ${maxDistance}`);
     }
   });
 
@@ -840,31 +1196,47 @@ function syncSliderAndNumber(slider, numberInput, isMin = true) {
         value = maxDistance - 0.005;
       }
       minDistance = value;
-      minDistanceSlider.value = value.toFixed(3);
-      minDistanceNumber.value = value.toFixed(3);
+      slider.value = value.toFixed(3);
+      numberInput.value = value.toFixed(3);
+      console.log(`Minimum Distance set to: ${minDistance}`);
     } else {
       // Ensure maxDistance does not go below minDistance
       if (value <= minDistance) {
         value = minDistance + 0.005;
       }
       maxDistance = value;
-      maxDistanceSlider.value = value.toFixed(3);
-      maxDistanceNumber.value = value.toFixed(3);
+      slider.value = value.toFixed(3);
+      numberInput.value = value.toFixed(3);
+      console.log(`Maximum Distance set to: ${maxDistance}`);
     }
   });
 }
 
-// Initialize synchronization for sliders and numerical inputs
-syncSliderAndNumber(minDistanceSlider, minDistanceNumber, true);
-syncSliderAndNumber(maxDistanceSlider, maxDistanceNumber, false);
+/**
+ * Synchronizes the overlap threshold slider and number input.
+ */
+function syncOverlapThreshold() {
+  // When slider changes, update number input
+  overlapThresholdSlider.addEventListener("input", (event) => {
+    overlapThreshold = parseFloat(event.target.value);
+    overlapThresholdNumber.value = overlapThreshold.toFixed(2);
+    console.log(`Thumb Overlap Threshold set to: ${overlapThreshold}`);
+  });
 
-// Event Listeners for Gesture Strictness Level Dropdowns
-openHandStrictnessDropdown.addEventListener("change", (event) => {
-  openHandStrictness = parseInt(event.target.value);
-  console.log(`Open Hand Strictness Level set to: ${openHandStrictness}`);
-});
+  // When number input changes, update slider
+  overlapThresholdNumber.addEventListener("input", (event) => {
+    let value = parseFloat(event.target.value);
+    value = clamp(value, 0.01, 0.1);
+    overlapThreshold = value;
+    overlapThresholdSlider.value = value.toFixed(2);
+    console.log(`Thumb Overlap Threshold set to: ${overlapThreshold}`);
+  });
+}
 
-pointingUpStrictnessDropdown.addEventListener("change", (event) => {
-  pointingUpStrictness = parseInt(event.target.value);
-  console.log(`Pointing Up Strictness Level set to: ${pointingUpStrictness}`);
+// =========================
+// Final Initialization on Load
+// =========================
+window.addEventListener("load", () => {
+  // Camera Ports and MIDI Initialization handled above
+  // All necessary synchronization is done in synchronizeControls()
 });

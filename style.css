@@ -127,6 +127,56 @@ h1 {
   cursor: not-allowed;
 }
 
+/* Camera Selection Styling */
+#camera-selection {
+  margin: 20px 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#camera-selection label {
+  font-size: 1rem;
+}
+
+#camera-selection select {
+  padding: 8px 12px;
+  font-size: 1rem;
+  border: 1px solid var(--control-border);
+  border-radius: 5px;
+  background-color: var(--control-background);
+  color: var(--primary-color);
+  cursor: pointer;
+  min-width: 200px;
+  transition: border-color 0.3s, box-shadow 0.3s;
+}
+
+#camera-selection select:focus {
+  outline: none;
+  border-color: var(--secondary-color);
+  box-shadow: 0 0 5px var(--secondary-color);
+}
+
+/* Hand Selection Styling */
+#hand-selection {
+  margin: 20px 0;
+}
+
+.radio-group {
+  display: flex;
+  gap: 20px;
+}
+
+.radio-group label {
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.radio-group input[type="radio"] {
+  margin-right: 8px;
+  cursor: pointer;
+}
+
 /* Video and Canvas Styling */
 .video-container {
   position: relative;
